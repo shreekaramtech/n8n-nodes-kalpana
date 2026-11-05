@@ -79,13 +79,18 @@ export const renderTarget = (
 const sizeLabel = (width: number | null, height: number | null) =>
 	width && height ? ` (${width}×${height})` : '';
 
+/** Kalpana lists at most this many templates per page. */
+const TEMPLATES_PAGE = 20;
+/** Pages read for a dropdown of every template: up to 200 templates. */
+const TEMPLATE_PAGES_MAX = 10;
+
 export async function searchTemplates(
 	this: ILoadOptionsFunctions,
 	filter?: string,
 	paginationToken?: string,
 ): Promise<INodeListSearchResult> {
 	const page = paginationToken ? Number(paginationToken) : 1;
-	const limit = 50;
+	const limit = TEMPLATES_PAGE;
 	const qs: IDataObject = { page, limit };
 	if (filter) qs.query = filter;
 	const { items, total } = await kalpanaApiRequest<{ items: TemplateSummary[]; total: number }>(
@@ -129,14 +134,16 @@ export async function getFlows(this: ILoadOptionsFunctions): Promise<INodeProper
 }
 
 export async function getTemplates(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const { items } = await kalpanaApiRequest<{ items: TemplateSummary[] }>(
-		this,
-		'GET',
-		'/agent/v1/templates',
-		undefined,
-		{ page: 1, limit: 100 },
-	);
-	return items.map((template) => ({
+	const templates: TemplateSummary[] = [];
+	for (let page = 1; page <= TEMPLATE_PAGES_MAX; page++) {
+		const { items, total } = await kalpanaApiRequest<{
+			items: TemplateSummary[];
+			total: number;
+		}>(this, 'GET', '/agent/v1/templates', undefined, { page, limit: TEMPLATES_PAGE });
+		templates.push(...items);
+		if (!items.length || templates.length >= total) break;
+	}
+	return templates.map((template) => ({
 		name: `${template.name}${sizeLabel(template.width, template.height)}`,
 		value: template.id,
 	}));

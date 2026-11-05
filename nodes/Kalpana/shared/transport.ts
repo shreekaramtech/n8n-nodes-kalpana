@@ -73,7 +73,14 @@ export const kalpanaApiRequest = async <T = IDataObject>(
 		json: true,
 		headers: { accept: 'application/json', ...headers },
 	};
-	if (body) options.body = body;
+	if (body && Object.keys(body).length) {
+		options.body = body;
+	} else if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+		// Kalpana reads a POST only as JSON, and n8n drops an empty object
+		// body, so an empty one goes as text with its JSON content type.
+		options.body = '{}';
+		options.headers = { ...options.headers, 'content-type': 'application/json' };
+	}
 	if (qs) options.qs = qs;
 	try {
 		return (await context.helpers.httpRequestWithAuthentication.call(

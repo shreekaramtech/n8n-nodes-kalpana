@@ -230,8 +230,16 @@ export async function createBatches(
 	return results;
 }
 
-const batchPath = (context: IExecuteFunctions, itemIndex: number) =>
-	`/agent/v1/batches/${encodeURIComponent((context.getNodeParameter('batchId', itemIndex) as string).trim())}`;
+const batchPath = (context: IExecuteFunctions, itemIndex: number) => {
+	const batchId = String(context.getNodeParameter('batchId', itemIndex, '') ?? '').trim();
+	if (!batchId) {
+		throw new NodeOperationError(context.getNode(), 'Give the batch ID', {
+			itemIndex,
+			description: 'Batch > Create and the Kalpana Trigger return it',
+		});
+	}
+	return `/agent/v1/batches/${encodeURIComponent(batchId)}`;
+};
 
 export async function getBatch(
 	this: IExecuteFunctions,

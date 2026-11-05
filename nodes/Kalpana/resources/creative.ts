@@ -330,7 +330,13 @@ export async function getCreative(
 	this: IExecuteFunctions,
 	itemIndex: number,
 ): Promise<INodeExecutionData> {
-	const jobId = (this.getNodeParameter('jobId', itemIndex) as string).trim();
+	const jobId = String(this.getNodeParameter('jobId', itemIndex, '') ?? '').trim();
+	if (!jobId) {
+		throw new NodeOperationError(this.getNode(), 'Give the job ID to get', {
+			itemIndex,
+			description: 'Creative > Create returns it as jobId',
+		});
+	}
 	const job = await kalpanaApiRequest<JobView>(
 		this,
 		'GET',
