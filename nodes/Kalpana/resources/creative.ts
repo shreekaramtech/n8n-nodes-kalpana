@@ -5,11 +5,11 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError, sleep } from 'n8n-workflow';
+import { ApplicationError, NodeApiError, NodeOperationError, sleep } from 'n8n-workflow';
 import { downloadFile } from '../shared/files';
 import type { RowBuilder } from '../shared/rows';
 import { renderTarget } from '../shared/templates';
-import { kalpanaApiRequest, nodeError } from '../shared/transport';
+import { kalpanaApiRequest, keyWorkspace, nodeError } from '../shared/transport';
 import { isVideoFormat, templateFields } from './templateFields';
 
 export const creativeOperations: INodeProperties[] = [
@@ -124,19 +124,17 @@ export const creativeFields: INodeProperties[] = [
 /** A job as Kalpana's API returns it. */
 type JobView = {
 	id: string;
-	workspaceId: string;
-	batchId: string | null;
-	templateId: string | null;
-	pageId: string | null;
-	flowId: string | null;
 	status: 'pending' | 'processing' | 'success' | 'failed' | 'cancelled';
-	outputKind: 'image' | 'video';
-	outputFormat: string;
+	template: { id: string; name: string } | null;
+	page: { id: string; name: string } | null;
+	flow: { id: string; name: string } | null;
+	batch: string | null;
+	/** The values it was made from, by layer. */
+	modifications: IDataObject | null;
+	output: { format: string; kind: 'image' | 'video' };
 	creditCost: number;
 	error: string | null;
-	createdAt: string;
-	updatedAt: string;
-	output: {
+	file: {
 		creativeId: string;
 		url: string;
 		fileName: string;
@@ -145,7 +143,12 @@ type JobView = {
 		width: number | null;
 		height: number | null;
 	} | null;
+	createdAt: string;
+	updatedAt: string;
 };
+
+/** The answer to creating or running jobs. */
+type JobRequest = { status: 'processing' | 'pending' | 'done'; jobs: JobView[] };
 
 const RENDERING = new Set(['pending', 'processing']);
 /** How long a run call asks Kalpana to hold its answer while the file renders
@@ -158,23 +161,31 @@ const ATTEMPTS = 3;
 const jobItem = (job: JobView): IDataObject => ({
 	jobId: job.id,
 	status: job.status,
-	fileUrl: job.output?.url ?? null,
-	fileName: job.output?.fileName ?? null,
-	contentType: job.output?.contentType ?? null,
-	width: job.output?.width ?? null,
-	height: job.output?.height ?? null,
-	sizeBytes: job.output?.sizeBytes ?? null,
-	creativeId: job.output?.creativeId ?? null,
-	format: job.outputFormat,
-	kind: job.outputKind,
+	fileUrl: job.file?.url ?? null,
+	fileName: job.file?.fileName ?? null,
+	contentType: job.file?.contentType ?? null,
+	width: job.file?.width ?? null,
+	height: job.file?.height ?? null,
+	sizeBytes: job.file?.sizeBytes ?? null,
+	creativeId: job.file?.creativeId ?? null,
+	format: job.output.format,
+	kind: job.output.kind,
 	creditCost: job.creditCost,
-	templateId: job.templateId,
-	pageId: job.pageId,
-	flowId: job.flowId,
-	batchId: job.batchId,
+	templateId: job.template?.id ?? null,
+	pageId: job.page?.id ?? null,
+	flowId: job.flow?.id ?? null,
+	batchId: job.batch,
+	modifications: job.modifications,
 	error: job.error,
 	createdAt: job.createdAt,
 });
+
+/** The one job of a request's answer. */
+const onlyJob = (request: JobRequest) => {
+	const [job] = request.jobs;
+	if (!job) throw new ApplicationError('Kalpana answered with no job');
+	return job;
+};
 
 /** A failure worth another try: no answer, a timeout, or a server error. */
 const transient = (error: unknown) => {
@@ -185,7 +196,8 @@ const transient = (error: unknown) => {
 
 /** A call that runs again on a transient failure. Only for calls that are
  * safe to repeat: reading a job, or running one (Kalpana starts a job only
- * while it is pending, so a repeat never renders or charges twice). */
+ * while it is pending and refuses a repeat with 409, so it never renders or
+ * charges twice). */
 const retrying = async <T>(node: INode, call: () => Promise<T>): Promise<T> => {
 	for (let attempt = 1; ; attempt++) {
 		try {
@@ -213,13 +225,13 @@ const withFile = async (
 ): Promise<INodeExecutionData> => {
 	const item: INodeExecutionData = { json: jobItem(job), pairedItem: { item: itemIndex } };
 	const download = context.getNodeParameter('download', itemIndex, false) as boolean;
-	if (download && job.output) {
+	if (download && job.file) {
 		const field = context.getNodeParameter('binaryProperty', itemIndex, 'data') as string;
 		item.binary = await downloadFile(
 			context,
-			job.output.url,
-			job.output.fileName,
-			job.output.contentType,
+			job.file.url,
+			job.file.fileName,
+			job.file.contentType,
 			field,
 		);
 	}
@@ -263,46 +275,65 @@ export async function createCreative(
 		});
 	}
 
+	const workspace = await rows.workspace();
+	// A job renders one page: the one chosen, else the template's first.
+	const page = target.flowId
+		? undefined
+		: (target.pageId ?? (await rows.template(target, itemIndex)).pageId ?? undefined);
+	const output: IDataObject = { format: outputFormat };
+	if (options.fileName) output.fileName = options.fileName;
+	if (options.stillTime && !video) output.stillTime = options.stillTime;
 	const body: IDataObject = {
-		templateId: target.templateId,
-		row: await rows.row(target, itemIndex),
-		outputFormat,
+		workspace,
+		jobs: [
+			{
+				...(target.flowId ? { flow: target.flowId } : { page }),
+				modifications: await rows.row(target, itemIndex),
+				output,
+			},
+		],
 	};
-	if (target.pageId) body.pageId = target.pageId;
-	if (target.flowId) body.flowId = target.flowId;
-	if (options.fileName) body.fileName = options.fileName;
-	if (options.stillTime && !video) body.stillTime = options.stillTime;
 
 	// The job is saved first and run second. Saving spends nothing; once it
 	// exists, starting and reading it are safe to repeat, so a dropped
 	// connection never renders or charges twice.
-	const created = await kalpanaApiRequest<JobView>(
-		this,
-		'POST',
-		'/agent/v1/jobs',
-		body,
-		undefined,
-		itemIndex,
+	const created = onlyJob(
+		await kalpanaApiRequest<JobRequest>(
+			this,
+			'POST',
+			'/agent/v1/jobs',
+			body,
+			undefined,
+			itemIndex,
+		),
 	);
 	const jobPath = `/agent/v1/jobs/${encodeURIComponent(created.id)}`;
+	const read = async () =>
+		await kalpanaApiRequest<JobView>(this, 'GET', jobPath, undefined, { workspace }, itemIndex);
 	const deadline = Date.now() + (options.timeout ?? 600) * 1000;
 
 	try {
 		// Kalpana holds the run call until the file is ready, up to the wait
 		// asked for, so most images come back here with their file.
-		let job = await retrying(
-			this.getNode(),
-			async () =>
-				await kalpanaApiRequest<JobView>(
-					this,
-					'POST',
-					`${jobPath}/run`,
-					undefined,
-					undefined,
-					itemIndex,
-					{ prefer: `wait=${wait ? RUN_WAIT_SECONDS : 0}` },
-				),
-		);
+		let job = await retrying(this.getNode(), async () => {
+			try {
+				return onlyJob(
+					await kalpanaApiRequest<JobRequest>(
+						this,
+						'POST',
+						`${jobPath}/run`,
+						{ workspace },
+						undefined,
+						itemIndex,
+						{ prefer: `wait=${wait ? RUN_WAIT_SECONDS : 0}` },
+					),
+				);
+			} catch (error) {
+				// A retried run whose first call started the job: read it.
+				if (error instanceof NodeApiError && Number(error.httpCode) === 409) return await read();
+				throw nodeError(this.getNode(), error, itemIndex);
+			}
+		});
 		if (!wait) return { json: jobItem(job), pairedItem: { item: itemIndex } };
 
 		// Longer renders, most videos among them, are read until they finish.
@@ -314,11 +345,7 @@ export async function createCreative(
 				});
 			}
 			await sleep(POLL_SECONDS * 1000);
-			job = await retrying(
-				this.getNode(),
-				async () =>
-					await kalpanaApiRequest<JobView>(this, 'GET', jobPath, undefined, undefined, itemIndex),
-			);
+			job = await retrying(this.getNode(), read);
 		}
 		return await withFile(this, finished(this, job, itemIndex), itemIndex);
 	} catch (error) {
@@ -337,12 +364,13 @@ export async function getCreative(
 			description: 'Creative > Create returns it as jobId',
 		});
 	}
+	const { id: workspace } = await keyWorkspace(this);
 	const job = await kalpanaApiRequest<JobView>(
 		this,
 		'GET',
 		`/agent/v1/jobs/${encodeURIComponent(jobId)}`,
 		undefined,
-		undefined,
+		{ workspace },
 		itemIndex,
 	);
 	return withFile(this, job, itemIndex);

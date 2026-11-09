@@ -12,7 +12,7 @@ import { kalpanaApiRequest } from '../shared/transport';
 import { isVideoFormat, templateFields } from './templateFields';
 
 /** Kalpana takes at most this many rows in one batch. */
-const MAX_ROWS = 500;
+const MAX_ROWS = 1000;
 /** Kalpana lists at most this many outputs per page. */
 const OUTPUTS_PAGE = 20;
 
@@ -160,7 +160,7 @@ type BatchOutput = {
 	downloadUrl: string | null;
 };
 
-/** All input items become rows of one batch, or several of 500 rows each. */
+/** All input items become rows of one batch, or several of 1,000 rows each. */
 export async function createBatches(
 	this: IExecuteFunctions,
 	rows: RowBuilder,
@@ -183,8 +183,16 @@ export async function createBatches(
 		}
 	}
 
+	const workspace = await rows.workspace();
+	// What every row renders on: the flow, else the page chosen, else the
+	// template's first page, as before.
+	const page = target.pageId ?? (await rows.template(target, 0)).pageId;
+	const renders: IDataObject = target.flowId ? { flow: target.flowId } : { pages: [page] };
+	const output: IDataObject = { format: outputFormat };
+	if (stillTime && !video) output.stillTime = stillTime;
 	const allRows: IDataObject[] = [];
-	for (let i = 0; i < items.length; i++) allRows.push(await rows.row(target, i));
+	for (let i = 0; i < items.length; i++)
+		allRows.push({ modifications: await rows.row(target, i), output });
 
 	const parts = Math.ceil(allRows.length / MAX_ROWS);
 	const results: INodeExecutionData[] = [];
@@ -192,14 +200,11 @@ export async function createBatches(
 		const start = part * MAX_ROWS;
 		const chunk = allRows.slice(start, start + MAX_ROWS);
 		const body: IDataObject = {
-			templateId: target.templateId,
+			workspace,
 			name: parts > 1 ? `${name} (${part + 1} of ${parts})` : name,
+			...renders,
 			rows: chunk,
-			outputFormat,
 		};
-		if (target.pageId) body.pageIds = [target.pageId];
-		if (target.flowId) body.flowIds = [target.flowId];
-		if (stillTime && !video) body.stillTime = stillTime;
 		const batch = await kalpanaApiRequest<IDataObject & { id: string }>(
 			this,
 			'POST',
@@ -222,7 +227,7 @@ export async function createBatches(
 				jobs: batch.jobCount ?? chunk.length,
 				creditCost: batch.creditCost ?? null,
 				status: render ? 'rendering' : 'draft',
-				warnings: batch.warnings ?? [],
+
 			},
 			pairedItem: chunk.map((_, index) => ({ item: start + index })),
 		});

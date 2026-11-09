@@ -29,7 +29,7 @@ Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes
 
 **Batch**
 
-- **Create**: make one batch with a row for every input item, for example every row of a sheet. It can start rendering at once or stay a draft to check in Kalpana first. Lists over 500 rows become several batches.
+- **Create**: make one batch with a row for every input item, for example every row of a sheet. It can start rendering at once or stay a draft to check in Kalpana first. Lists over 1,000 rows become several batches.
 - **Get**: get a batch's progress.
 - **Get Files**: get the files a batch rendered, one item per file, optionally as binary data.
 - **Render**: start rendering a draft batch.
