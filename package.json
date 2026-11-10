@@ -1,5 +1,5 @@
 {
-	"name": "n8n-nodes-kalpana",
+	"name": "@kalpana-one/n8n-nodes-kalpana",
 	"version": "0.1.0",
 	"description": "n8n nodes for Kalpana: fill templates with data and render images and videos, in bulk or one at a time, and react when renders finish.",
 	"license": "MIT",
@@ -33,6 +33,9 @@
 	"files": [
 		"dist"
 	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"n8n": {
 		"n8nNodesApiVersion": 1,
 		"strict": true,

@@ -1,5 +1,5 @@
 {
-	"node": "n8n-nodes-kalpana",
+	"node": "@kalpana-one/n8n-nodes-kalpana",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
 	"categories": ["Marketing & Content"],

@@ -1,4 +1,4 @@
-# n8n-nodes-kalpana
+# @kalpana-one/n8n-nodes-kalpana
 
 This is an n8n community node. It lets you use [Kalpana](https://kalpana.one) in your n8n workflows.
 
@@ -16,7 +16,7 @@ Kalpana turns a design into a reusable template, then fills it with your data to
 
 ## Installation
 
-Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the n8n community nodes documentation. The package name is `n8n-nodes-kalpana`.
+Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the n8n community nodes documentation. The package name is `@kalpana-one/n8n-nodes-kalpana`.
 
 ## Operations
 
