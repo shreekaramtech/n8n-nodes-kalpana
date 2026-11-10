@@ -271,7 +271,7 @@ export async function createCreative(
 	if (target.flowId && !video) {
 		throw new NodeOperationError(this.getNode(), 'A flow renders as a video', {
 			itemIndex,
-			description: 'Choose MP4, GIF, WebM or MOV as the format',
+			description: 'Choose MP4 or GIF as the format',
 		});
 	}
 

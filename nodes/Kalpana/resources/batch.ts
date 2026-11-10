@@ -197,7 +197,7 @@ export async function createBatches(
 		}
 		if (!video) {
 			throw new NodeOperationError(this.getNode(), 'A flow renders as a video', {
-				description: 'Choose MP4, GIF, WebM or MOV as the format',
+				description: 'Choose MP4 or GIF as the format',
 			});
 		}
 	}

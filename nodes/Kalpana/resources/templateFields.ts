@@ -1,6 +1,6 @@
 import type { INodeProperties } from 'n8n-workflow';
 
-export const IMAGE_FORMATS = ['png', 'jpeg', 'webp', 'pdf'];
+export const IMAGE_FORMATS = ['png', 'jpeg', 'webp'];
 
 export const isVideoFormat = (format: string) => !IMAGE_FORMATS.includes(format);
 
@@ -105,11 +105,8 @@ export const templateFields = (resource: string, operation: string): INodeProper
 			options: [
 				{ name: 'GIF (Video)', value: 'gif' },
 				{ name: 'JPEG', value: 'jpeg' },
-				{ name: 'MOV With Transparency (Video)', value: 'mov' },
 				{ name: 'MP4 (Video)', value: 'mp4' },
-				{ name: 'PDF', value: 'pdf' },
 				{ name: 'PNG', value: 'png' },
-				{ name: 'WebM With Transparency (Video)', value: 'webm' },
 				{ name: 'WebP', value: 'webp' },
 			],
 		},
