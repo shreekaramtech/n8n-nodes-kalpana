@@ -8,7 +8,7 @@ const URL_VALUE = /^https?:\/\//i;
 /**
  * Turns mapped field values into Kalpana rows. Image fields given a web
  * address are imported into the workspace first, since rows take an image's
- * id, file name or key. One instance per execution, so each template's inputs
+ * id or file name. One instance per execution, so each template's inputs
  * load once and each address imports once.
  */
 export class RowBuilder {
@@ -24,7 +24,9 @@ export class RowBuilder {
 		const cacheKey = `${target.templateId}:${target.pageId ?? ''}:${target.flowId ?? ''}`;
 		let inputs = this.inputs.get(cacheKey);
 		if (!inputs) {
-			inputs = templateInputs(this.context, target, itemIndex);
+			inputs = this.workspace().then(
+				async (workspace) => await templateInputs(this.context, target, workspace, itemIndex),
+			);
 			this.inputs.set(cacheKey, inputs);
 		}
 		return inputs;

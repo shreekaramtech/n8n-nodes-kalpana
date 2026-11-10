@@ -8,13 +8,13 @@ import { NodeOperationError } from 'n8n-workflow';
 import { downloadFile } from '../shared/files';
 import type { RowBuilder } from '../shared/rows';
 import { renderTarget } from '../shared/templates';
-import { kalpanaApiRequest } from '../shared/transport';
+import { kalpanaApiRequest, keyWorkspace } from '../shared/transport';
 import { isVideoFormat, templateFields } from './templateFields';
 
 /** Kalpana takes at most this many rows in one batch. */
 const MAX_ROWS = 1000;
-/** Kalpana lists at most this many outputs per page. */
-const OUTPUTS_PAGE = 20;
+/** A batch's jobs read per call. Kalpana allows up to 100. */
+const JOBS_PAGE = 100;
 
 export const batchOperations: INodeProperties[] = [
 	{
@@ -140,25 +140,44 @@ export const batchFields: INodeProperties[] = [
 	},
 ];
 
+/** Get a batch, cut to what the node reads. */
 type BatchStatus = {
 	id: string;
 	name: string;
 	createdAt: string;
-	total: number;
-	completed: number;
-	failed: number;
-	processing: number;
 	status: string;
+	jobs: {
+		total: number;
+		succeeded: number;
+		failed: number;
+		processing: number;
+		cancelled: number;
+		pending: number;
+	};
 };
 
-type BatchOutput = {
+/** One of a batch's jobs, as List a batch's jobs gives it. */
+type BatchJob = {
 	id: string;
 	status: string;
-	outputKind: string;
-	outputFormat: string;
-	contentType: string | null;
-	downloadUrl: string | null;
+	page: { id: string; name: string } | null;
+	flow: { id: string; name: string } | null;
+	modifications: IDataObject | null;
+	output: { format: string; kind: string };
+	error: string | null;
+	file: {
+		creativeId: string;
+		url: string;
+		fileName: string;
+		contentType: string;
+		sizeBytes: number;
+		width: number | null;
+		height: number | null;
+	} | null;
 };
+
+/** Batch statuses that still change. */
+const UNSETTLED = new Set(['pending', 'processing']);
 
 /** All input items become rows of one batch, or several of 1,000 rows each. */
 export async function createBatches(
@@ -208,16 +227,13 @@ export async function createBatches(
 		const batch = await kalpanaApiRequest<IDataObject & { id: string }>(
 			this,
 			'POST',
-			'/agent/v1/batches',
+			'/batches',
 			body,
 		);
 		if (render) {
-			await kalpanaApiRequest(
-				this,
-				'POST',
-				`/agent/v1/batches/${encodeURIComponent(batch.id)}/run`,
-				{},
-			);
+			await kalpanaApiRequest(this, 'POST', `/batches/${encodeURIComponent(batch.id)}/run`, {
+				workspace,
+			});
 		}
 		results.push({
 			json: {
@@ -227,7 +243,6 @@ export async function createBatches(
 				jobs: batch.jobCount ?? chunk.length,
 				creditCost: batch.creditCost ?? null,
 				status: render ? 'rendering' : 'draft',
-
 			},
 			pairedItem: chunk.map((_, index) => ({ item: start + index })),
 		});
@@ -243,19 +258,21 @@ const batchPath = (context: IExecuteFunctions, itemIndex: number) => {
 			description: 'Batch > Create and the Kalpana Trigger return it',
 		});
 	}
-	return `/agent/v1/batches/${encodeURIComponent(batchId)}`;
+	return { batchId, path: `/batches/${encodeURIComponent(batchId)}` };
 };
 
 export async function getBatch(
 	this: IExecuteFunctions,
 	itemIndex: number,
 ): Promise<INodeExecutionData[]> {
+	const { path } = batchPath(this, itemIndex);
+	const { id: workspace } = await keyWorkspace(this);
 	const batch = await kalpanaApiRequest<BatchStatus>(
 		this,
 		'GET',
-		batchPath(this, itemIndex),
+		path,
 		undefined,
-		undefined,
+		{ workspace },
 		itemIndex,
 	);
 	return [
@@ -264,11 +281,13 @@ export async function getBatch(
 				batchId: batch.id,
 				name: batch.name,
 				status: batch.status,
-				total: batch.total,
-				completed: batch.completed,
-				failed: batch.failed,
-				processing: batch.processing,
-				finished: batch.processing === 0 && batch.completed + batch.failed >= batch.total,
+				total: batch.jobs.total,
+				succeeded: batch.jobs.succeeded,
+				failed: batch.jobs.failed,
+				processing: batch.jobs.processing,
+				pending: batch.jobs.pending,
+				cancelled: batch.jobs.cancelled,
+				finished: !UNSETTLED.has(batch.status),
 				createdAt: batch.createdAt,
 			},
 			pairedItem: { item: itemIndex },
@@ -280,21 +299,31 @@ export async function renderBatch(
 	this: IExecuteFunctions,
 	itemIndex: number,
 ): Promise<INodeExecutionData[]> {
-	const path = batchPath(this, itemIndex);
-	const result = await kalpanaApiRequest(this, 'POST', `${path}/run`, {}, undefined, itemIndex);
+	const { batchId, path } = batchPath(this, itemIndex);
+	const { id: workspace } = await keyWorkspace(this);
+	const result = await kalpanaApiRequest(
+		this,
+		'POST',
+		`${path}/run`,
+		{ workspace },
+		undefined,
+		itemIndex,
+	);
 	return [
 		{
-			json: { batchId: path.split('/').pop(), status: 'rendering', ...result },
+			json: { batchId, status: 'rendering', ...result },
 			pairedItem: { item: itemIndex },
 		},
 	];
 }
 
+/** The batch's rendered files, one item each, in job order. */
 export async function getBatchFiles(
 	this: IExecuteFunctions,
 	itemIndex: number,
 ): Promise<INodeExecutionData[]> {
-	const path = `${batchPath(this, itemIndex)}/outputs`;
+	const { batchId, path } = batchPath(this, itemIndex);
+	const { id: workspace } = await keyWorkspace(this);
 	const returnAll = this.getNodeParameter('returnAll', itemIndex, false) as boolean;
 	const limit = returnAll ? Infinity : (this.getNodeParameter('limit', itemIndex, 50) as number);
 	const download = this.getNodeParameter('download', itemIndex, false) as boolean;
@@ -302,41 +331,45 @@ export async function getBatchFiles(
 		? (this.getNodeParameter('binaryProperty', itemIndex, 'data') as string)
 		: 'data';
 
-	const outputs: BatchOutput[] = [];
-	for (let page = 1; outputs.length < limit; page++) {
-		const { items } = await kalpanaApiRequest<{ items: BatchOutput[] }>(
+	const files: BatchJob[] = [];
+	for (let page = 1; files.length < limit; page++) {
+		const { jobs, total } = await kalpanaApiRequest<{ jobs: BatchJob[]; total: number }>(
 			this,
 			'GET',
-			path,
+			`${path}/jobs`,
 			undefined,
-			{ page, limit: OUTPUTS_PAGE },
+			{ workspace, page, limit: JOBS_PAGE },
 			itemIndex,
 		);
-		outputs.push(...items);
-		if (items.length < OUTPUTS_PAGE) break;
+		files.push(...jobs.filter((job) => job.file));
+		if (jobs.length < JOBS_PAGE || page * JOBS_PAGE >= total) break;
 	}
 
 	const results: INodeExecutionData[] = [];
-	for (const output of outputs.slice(0, limit)) {
+	for (const job of files.slice(0, limit)) {
+		const file = job.file!;
 		const item: INodeExecutionData = {
 			json: {
-				jobId: output.id,
-				status: output.status,
-				fileUrl: output.downloadUrl,
-				contentType: output.contentType,
-				format: output.outputFormat,
-				kind: output.outputKind,
+				batchId,
+				jobId: job.id,
+				status: job.status,
+				fileUrl: file.url,
+				fileName: file.fileName,
+				contentType: file.contentType,
+				width: file.width,
+				height: file.height,
+				sizeBytes: file.sizeBytes,
+				creativeId: file.creativeId,
+				format: job.output.format,
+				kind: job.output.kind,
+				pageId: job.page?.id ?? null,
+				pageName: job.page?.name ?? null,
+				modifications: job.modifications,
 			},
 			pairedItem: { item: itemIndex },
 		};
-		if (download && output.downloadUrl) {
-			item.binary = await downloadFile(
-				this,
-				output.downloadUrl,
-				`${output.id}.${output.outputFormat}`,
-				output.contentType ?? '',
-				field,
-			);
+		if (download) {
+			item.binary = await downloadFile(this, file.url, file.fileName, file.contentType, field);
 		}
 		results.push(item);
 	}

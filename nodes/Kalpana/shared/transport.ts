@@ -100,12 +100,8 @@ type Workspace = { id: string; name: string; slug: string };
 
 /** The workspace the API key works in. A key is made for one workspace. */
 export const keyWorkspace = async (context: KalpanaContext): Promise<Workspace> => {
-	const { items } = await kalpanaApiRequest<{ items: Workspace[] }>(
-		context,
-		'GET',
-		'/agent/v1/workspaces',
-	);
-	const [workspace] = items;
+	const workspaces = await kalpanaApiRequest<Workspace[]>(context, 'GET', '/workspaces');
+	const [workspace] = workspaces;
 	if (!workspace) {
 		throw new NodeApiError(context.getNode(), {} as JsonObject, {
 			message: 'This API key has no workspace',

@@ -298,16 +298,9 @@ export async function createCreative(
 	// exists, starting and reading it are safe to repeat, so a dropped
 	// connection never renders or charges twice.
 	const created = onlyJob(
-		await kalpanaApiRequest<JobRequest>(
-			this,
-			'POST',
-			'/agent/v1/jobs',
-			body,
-			undefined,
-			itemIndex,
-		),
+		await kalpanaApiRequest<JobRequest>(this, 'POST', '/jobs', body, undefined, itemIndex),
 	);
-	const jobPath = `/agent/v1/jobs/${encodeURIComponent(created.id)}`;
+	const jobPath = `/jobs/${encodeURIComponent(created.id)}`;
 	const read = async () =>
 		await kalpanaApiRequest<JobView>(this, 'GET', jobPath, undefined, { workspace }, itemIndex);
 	const deadline = Date.now() + (options.timeout ?? 600) * 1000;
@@ -368,7 +361,7 @@ export async function getCreative(
 	const job = await kalpanaApiRequest<JobView>(
 		this,
 		'GET',
-		`/agent/v1/jobs/${encodeURIComponent(jobId)}`,
+		`/jobs/${encodeURIComponent(jobId)}`,
 		undefined,
 		{ workspace },
 		itemIndex,

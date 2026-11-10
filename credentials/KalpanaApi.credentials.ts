@@ -50,7 +50,7 @@ export class KalpanaApi implements ICredentialType {
 	test: ICredentialTestRequest = {
 		request: {
 			baseURL: '={{$credentials.baseUrl.replace(/\\/+$/, "")}}/api',
-			url: '/agent/v1/workspaces',
+			url: '/workspaces',
 			method: 'GET',
 		},
 	};

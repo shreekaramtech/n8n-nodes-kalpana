@@ -150,7 +150,7 @@ export async function uploadImage(
 		});
 	}
 	const { assets, failed } = await kalpanaApiRequest<{
-		assets: { storageKey: string; filename: string | null }[];
+		assets: { id: string; filename: string | null }[];
 		failed: { contentHash: string; message: string }[];
 	}>(
 		this,
@@ -171,7 +171,7 @@ export async function uploadImage(
 		);
 	}
 	return {
-		json: { image: asset.storageKey, fileName: asset.filename ?? name },
+		json: { image: asset.id, fileName: asset.filename ?? name },
 		pairedItem: { item: itemIndex },
 	};
 }

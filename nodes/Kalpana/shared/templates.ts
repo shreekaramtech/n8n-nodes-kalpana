@@ -7,59 +7,108 @@ import type {
 	ResourceMapperField,
 	ResourceMapperFields,
 } from 'n8n-workflow';
-import { kalpanaApiRequest, type KalpanaContext } from './transport';
+import { kalpanaApiRequest, keyWorkspace, type KalpanaContext } from './transport';
 
+/** A layer a row can fill, keyed as `modifications` names it. */
 export type TemplateInput = {
-	id: string;
 	key: string;
 	label: string;
 	type: 'text' | 'image';
-	required: boolean;
-	description: string | null;
-	dimensions?: { width: number; height: number };
 };
 
 export type TemplateInputs = {
 	id: string;
 	name: string;
-	isAnimated: boolean;
-	duration?: number;
-	stillTime?: number;
+	/** The page a job renders: the one chosen, else the template's first. */
 	pageId: string | null;
-	flowId?: string;
-	pages: { id: string; name: string; width: number | null; height: number | null }[];
-	flows?: { id: string; name: string; duration: number; pageIds: string[] }[];
+	pages: { id: string; name: string }[];
+	flows: { id: string; name: string; pageIds: string[] }[];
 	inputs: TemplateInput[];
 };
 
-type TemplateSummary = {
+/** Get a template, cut to what the node reads. */
+type TemplateDetail = {
+	id: string;
+	name: string;
+	pages: {
+		id: string | null;
+		name: string;
+		variables?: Record<string, { node_type?: string }>;
+	}[];
+	flows?: { id: string; name: string; flow?: { steps?: { page?: string }[] } | null }[];
+};
+
+/** Get a template summary: each page's layer names. */
+type TemplateLayers = {
+	pages: { id: string | null; nodes?: Record<string, { name?: string }> }[];
+};
+
+type TemplateListItem = {
 	id: string;
 	name: string;
 	width: number | null;
 	height: number | null;
-	isAnimated: boolean;
-	openUrl: string | null;
 };
 
 export type RenderTarget = { templateId: string; pageId?: string; flowId?: string };
 
-/** The template's pages, flows and the inputs rows fill on one page or flow. */
-export const templateInputs = (
+/** The layers a page's rows fill, keyed by `prefix` + layer id. Colours are
+ * left out: the API cannot set them yet. */
+const pageInputs = (
+	page: TemplateDetail['pages'][number],
+	names: Record<string, { name?: string }>,
+	prefix = '',
+	labelPrefix = '',
+): TemplateInput[] =>
+	Object.entries(page.variables ?? {}).flatMap(([id, variable]) => {
+		const type = variable.node_type ?? 'text';
+		if (type !== 'text' && type !== 'image') return [];
+		return [{ key: `${prefix}${id}`, label: `${labelPrefix}${names[id]?.name ?? id}`, type }];
+	});
+
+/**
+ * The template's pages, flows and the layers rows fill on one page or flow.
+ * A page's layers are keyed by id. A flow's are keyed `<pageId>@<layer id>`
+ * with the page's name in the label, since its pages can share layer names.
+ */
+export const templateInputs = async (
 	context: KalpanaContext,
 	target: RenderTarget,
+	workspace?: string,
 	itemIndex?: number,
-) => {
-	const qs: IDataObject = {};
-	if (target.flowId) qs.flowId = target.flowId;
-	else if (target.pageId) qs.pageId = target.pageId;
-	return kalpanaApiRequest<TemplateInputs>(
-		context,
-		'GET',
-		`/agent/v1/templates/${encodeURIComponent(target.templateId)}/inputs`,
-		undefined,
-		qs,
-		itemIndex,
+): Promise<TemplateInputs> => {
+	const qs = { workspace: workspace ?? (await keyWorkspace(context)).id };
+	const path = `/templates/${encodeURIComponent(target.templateId)}`;
+	const [template, layers] = await Promise.all([
+		kalpanaApiRequest<TemplateDetail>(context, 'GET', path, undefined, qs, itemIndex),
+		kalpanaApiRequest<TemplateLayers>(context, 'GET', `${path}/summary`, undefined, qs, itemIndex),
+	]);
+	const pages = template.pages.flatMap((page) =>
+		page.id ? [{ id: page.id, name: page.name }] : [],
 	);
+	const flows = (template.flows ?? []).map((flow) => ({
+		id: flow.id,
+		name: flow.name,
+		pageIds: [
+			...new Set((flow.flow?.steps ?? []).flatMap((step) => (step.page ? [step.page] : []))),
+		],
+	}));
+	const namesOf = (pageId: string | null) =>
+		layers.pages.find((page) => page.id === pageId)?.nodes ?? {};
+
+	let inputs: TemplateInput[] = [];
+	const pageId = target.flowId ? null : (target.pageId ?? pages[0]?.id ?? null);
+	if (target.flowId) {
+		const flow = flows.find((item) => item.id === target.flowId);
+		const shown = template.pages.filter((page) => page.id && flow?.pageIds.includes(page.id));
+		inputs = shown.flatMap((page) =>
+			pageInputs(page, namesOf(page.id), `${page.id}@`, `${page.name}: `),
+		);
+	} else {
+		const page = template.pages.find((item) => item.id === pageId) ?? template.pages[0];
+		if (page) inputs = pageInputs(page, namesOf(page.id));
+	}
+	return { id: template.id, name: template.name, pageId, pages, flows, inputs };
 };
 
 /** The template, page or flow chosen in the node's fields. */
@@ -79,10 +128,20 @@ export const renderTarget = (
 const sizeLabel = (width: number | null, height: number | null) =>
 	width && height ? ` (${width}×${height})` : '';
 
-/** Kalpana lists at most this many templates per page. */
-const TEMPLATES_PAGE = 20;
-/** Pages read for a dropdown of every template: up to 200 templates. */
-const TEMPLATE_PAGES_MAX = 10;
+/** Templates listed per call by the search box. Kalpana allows up to 100. */
+const TEMPLATES_PAGE = 50;
+/** Pages read for a dropdown of every template: up to 500 templates. */
+const TEMPLATE_PAGES_MAX = 5;
+const TEMPLATES_DROPDOWN_PAGE = 100;
+
+const listTemplates = async (
+	context: ILoadOptionsFunctions,
+	qs: IDataObject,
+): Promise<{ templates: TemplateListItem[]; total: number }> =>
+	await kalpanaApiRequest(context, 'GET', '/templates', undefined, {
+		workspace: (await keyWorkspace(context)).id,
+		...qs,
+	});
 
 export async function searchTemplates(
 	this: ILoadOptionsFunctions,
@@ -90,23 +149,15 @@ export async function searchTemplates(
 	paginationToken?: string,
 ): Promise<INodeListSearchResult> {
 	const page = paginationToken ? Number(paginationToken) : 1;
-	const limit = TEMPLATES_PAGE;
-	const qs: IDataObject = { page, limit };
-	if (filter) qs.query = filter;
-	const { items, total } = await kalpanaApiRequest<{ items: TemplateSummary[]; total: number }>(
-		this,
-		'GET',
-		'/agent/v1/templates',
-		undefined,
-		qs,
-	);
+	const qs: IDataObject = { page, limit: TEMPLATES_PAGE };
+	if (filter) qs.search = filter;
+	const { templates, total } = await listTemplates(this, qs);
 	return {
-		results: items.map((template) => ({
+		results: templates.map((template) => ({
 			name: `${template.name}${sizeLabel(template.width, template.height)}`,
 			value: template.id,
-			url: template.openUrl ?? undefined,
 		})),
-		paginationToken: page * limit < total ? String(page + 1) : undefined,
+		paginationToken: page * TEMPLATES_PAGE < total ? String(page + 1) : undefined,
 	};
 }
 
@@ -117,39 +168,33 @@ export async function getPages(this: ILoadOptionsFunctions): Promise<INodeProper
 	const templateId = chosenTemplate(this);
 	if (!templateId) return [];
 	const { pages } = await templateInputs(this, { templateId });
-	return pages.map((page, index) => ({
-		name: `${page.name || `Page ${index + 1}`}${sizeLabel(page.width, page.height)}`,
-		value: page.id,
-	}));
+	return pages.map((page, index) => ({ name: page.name || `Page ${index + 1}`, value: page.id }));
 }
 
 export async function getFlows(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
 	const templateId = chosenTemplate(this);
 	if (!templateId) return [];
-	const { flows = [] } = await templateInputs(this, { templateId });
-	return flows.map((flow) => ({
-		name: `${flow.name} (${flow.duration} s)`,
-		value: flow.id,
-	}));
+	const { flows } = await templateInputs(this, { templateId });
+	return flows.map((flow) => ({ name: flow.name, value: flow.id }));
 }
 
 export async function getTemplates(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-	const templates: TemplateSummary[] = [];
+	const all: TemplateListItem[] = [];
 	for (let page = 1; page <= TEMPLATE_PAGES_MAX; page++) {
-		const { items, total } = await kalpanaApiRequest<{
-			items: TemplateSummary[];
-			total: number;
-		}>(this, 'GET', '/agent/v1/templates', undefined, { page, limit: TEMPLATES_PAGE });
-		templates.push(...items);
-		if (!items.length || templates.length >= total) break;
+		const { templates, total } = await listTemplates(this, {
+			page,
+			limit: TEMPLATES_DROPDOWN_PAGE,
+		});
+		all.push(...templates);
+		if (!templates.length || all.length >= total) break;
 	}
-	return templates.map((template) => ({
+	return all.map((template) => ({
 		name: `${template.name}${sizeLabel(template.width, template.height)}`,
 		value: template.id,
 	}));
 }
 
-/** One mapping field per template input, keyed as rows key it. */
+/** One mapping field per layer a row can fill, keyed as `modifications` names it. */
 export async function getTemplateFields(
 	this: ILoadOptionsFunctions,
 ): Promise<ResourceMapperFields> {
@@ -165,7 +210,7 @@ export async function getTemplateFields(
 		id: input.key,
 		displayName:
 			input.type === 'image' ? `${input.label} (image: URL, file name or image ID)` : input.label,
-		required: input.required,
+		required: false,
 		defaultMatch: false,
 		canBeUsedToMatch: false,
 		display: true,
